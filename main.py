@@ -12,7 +12,7 @@ from environments import hopper_v3, hopper5d_v3, half_cheetah_v3, ant_v3, walker
 from agent import SacAgent
 import os
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 def run():
     parser = argparse.ArgumentParser()

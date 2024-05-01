@@ -1,0 +1,54 @@
+FROM bingliunpu/pytorch1.8.1-py38-cuda11.1-cudnn8-ubuntu18.04:latest
+LABEL description="pytorch 1.8.1 cuda 11.1" version="1.0" owner="yjyeh" maintainer="yjyeh"
+#ENV workspace /var/www/localhost/htdocs/
+ENV ENV_PATH $HOME/.visdom
+ENV LOGGING_LEVEL=INFO
+ENV HOSTNAME=localhost
+ENV BASE_URL=/
+ENV READONLY=True
+ENV ENABLE_LOGIN=False
+ENV FORCE_NEW_COOKIE=False
+ENV NO_PROXY="localhost,127.0.0.1"
+
+WORKDIR /708HDD2/yjyeh
+
+RUN apt install -y swig
+RUN apt install -y libosmesa6-dev libgl1-mesa-glx libglfw3
+RUN apt-get install patchelf
+
+
+RUN mkdir -p /root/.mujoco \
+    && wget https://mujoco.org/download/mujoco210-linux-x86_64.tar.gz -O mujoco.tar.gz \
+    && tar -xf mujoco.tar.gz -C /root/.mujoco \
+    && rm mujoco.tar.gz
+
+ENV LD_LIBRARY_PATH /root/.mujoco/mujoco210/bin:${LD_LIBRARY_PATH}
+#ENV LD_LIBRARY_PATH /usr/local/nvidia/lib64:${LD_LIBRARY_PATH}
+RUN ls /root
+
+
+#RUN apt-get install -y libglew-dev
+#RUN apt install libopengl0 -y
+
+
+#RUN apk --update add apache2
+#RUN rm -rf /var/cache/apk/*
+#//708HDD2/yjyeh/project/hgnn_ppo_fjsp_2022/
+COPY requirements.txt /708HDD2/yjyeh/
+RUN pip install -r /708HDD2/yjyeh/requirements.txt
+RUN ln -s /usr/lib/x86_64-linux-gnu/libGL.so.1 /usr/lib/x86_64-linux-gnu/libGL.so
+
+
+#RUN python -m visdom.server
+#EXPOSE 80
+#EXPOSE 8097
+#ENTRYPOINT ["httpd", "-D", "FOREGROUND"]
+
+
+#--entrypoint -v /708HDD2/yjyeh/project/gnn_drl_fjsp:/opt/project -v /708HDD2/yjyeh/static:/root/.visdom -p 8097:8097 --rm --gpus all
+
+#run options
+# 20231012
+# -v /708HDD2/yjyeh/static:/root/.visdom -p 8097:8097 --rm --gpus all
+
+# /home/yjyeh/.local/bin/tensorboard --logdir=runs

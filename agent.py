@@ -107,6 +107,7 @@ class SacAgent:
         torch.backends.cudnn.deterministic = True  # It harms a performance.
         torch.backends.cudnn.benchmark = False
         self.q_frequency = q_frequency
+        self.model_saved_step = model_saved_step
         self.QM = QMonitor()
         
         self.device = torch.device(
@@ -282,7 +283,7 @@ class SacAgent:
 
             minq = torch.where( mask, next_q1, next_q2)
                 
-            next_q = minq + self.alpha * next_entropies
+            next_q = minq + self.alpha * next_entropies     # yjyeh:?? q-alph.log(pi(next_action|next state)
 
         target_q = rewards + (1.0 - dones) * self.gamma_n * next_q
 
@@ -351,8 +352,8 @@ class SacAgent:
                 for i in range(len(PREF_)):
                     #self.evaluate(PREF_[i],self.monitor[i],i)
                     self.evaluate_(PREF_[i],i)
-                if self.steps % model_saved_step == 0:
-                    self.save_models(self.steps/model_saved_step)
+                if self.steps % self.model_saved_step == 0:
+                    self.save_models(self.steps/self.model_saved_step)
 
             state = next_state
 
@@ -408,6 +409,9 @@ class SacAgent:
             self.q2_optim, self.critic.Q2, q2_loss, self.grad_clip)
         update_params(
             self.policy_optim, self.policy, policy_loss, self.grad_clip)
+        self.q1_optim.step()
+        self.q2_optim.step()
+        self.policy_optim.step()
 
         if self.entropy_tuning:
             entropy_loss = self.calc_entropy_loss(entropies, weights)
@@ -470,11 +474,11 @@ class SacAgent:
                 q2 = torch.tensordot(q2, preference, dims = 1)
                 q = torch.min(q1, q2)
                 
-                l = - q - self.alpha * entropy
+                l = - q - self.alpha * entropy      # yjyeh: ??    sup (alpha.log()-lamda.Q)   here: use -alpha instead of alpha
                 losses.append(l)
 
         losses = torch.stack(losses, dim = 1)
-        policy_loss, idx =  torch.min(losses, 1)
+        policy_loss, idx =  torch.min(losses, 1)     # yjyeh:?? sup
         ll=idx.detach().cpu()[:,0].tolist()
         policy_loss = torch.mean(policy_loss)
 
