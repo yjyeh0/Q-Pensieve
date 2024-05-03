@@ -35,8 +35,14 @@ RUN ls /root
 #RUN rm -rf /var/cache/apk/*
 #//708HDD2/yjyeh/project/hgnn_ppo_fjsp_2022/
 COPY requirements.txt /708HDD2/yjyeh/
+
 RUN pip install -r /708HDD2/yjyeh/requirements.txt
 RUN ln -s /usr/lib/x86_64-linux-gnu/libGL.so.1 /usr/lib/x86_64-linux-gnu/libGL.so
+
+#RUN pip install numpy --upgrade
+RUN pip install git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl
+RUN echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf > /dev/null
+
 
 
 #RUN python -m visdom.server
