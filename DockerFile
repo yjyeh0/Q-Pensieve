@@ -52,3 +52,9 @@ RUN ln -s /usr/lib/x86_64-linux-gnu/libGL.so.1 /usr/lib/x86_64-linux-gnu/libGL.s
 # -v /708HDD2/yjyeh/static:/root/.visdom -p 8097:8097 --rm --gpus all
 
 # /home/yjyeh/.local/bin/tensorboard --logdir=runs
+
+# for Q-Pensieve input parameters
+#--env_id "MO_hopper-v0" --seed 1 --prefer 4 --buf_num 4 --q_freq 1000
+
+# for PEDA
+#--env_id "MO-Hopper-v2" --prefer 4 --buf_num 4 --q_freq 1000 --dir experiment_runs/uniform --seed 1 --dataset expert_uniform --num_steps_per_iter 200000 --max_iters 2

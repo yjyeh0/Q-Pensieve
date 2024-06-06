@@ -16,10 +16,15 @@ from multi_step import *
 from datetime import datetime
 import time
 
+from torch.utils.tensorboard import SummaryWriter
+writer = SummaryWriter()
+
+PREF = [[0.9, 0.1], [0.5, 0.5], [0.1, 0.9]]
+p_name= ['9010','5050','1090']
 #PREF = [[0.9, 0.1], [0.8, 0.2], [0.7, 0.3], [0.6, 0.4], [0.5, 0.5], [0.4, 0.6], [0.3, 0.7], [0.2, 0.8],[0.1,0.9]]
 
-p_name= ['9505','9010','8515','8020','7525','7030','6535','6040','5545','5050','4555','4060','3565','3070','2575','2080','1585','1090','0595']
-PREF = [[0.95,0.05],[0.9, 0.1], [0.85, 0.15], [0.8, 0.2], [0.75, 0.25], [0.7, 0.3], [0.65, 0.35], [0.6, 0.4], [0.55, 0.35], [0.5, 0.5], [0.45, 0.55], [0.4, 0.6], [0.35, 0.65], [0.3, 0.7], [0.25, 0.75],[0.2, 0.8], [0.15,0.85] ,[0.1,0.9]]
+# p_name= ['9505','9010','8515','8020','7525','7030','6535','6040','5545','5050','4555','4060','3565','3070','2575','2080','1585','1090','0595']
+# PREF = [[0.95,0.05],[0.9, 0.1], [0.85, 0.15], [0.8, 0.2], [0.75, 0.25], [0.7, 0.3], [0.65, 0.35], [0.6, 0.4], [0.55, 0.35], [0.5, 0.5], [0.45, 0.55], [0.4, 0.6], [0.35, 0.65], [0.3, 0.7], [0.25, 0.75],[0.2, 0.8], [0.15,0.85] ,[0.1,0.9]]
 class QMonitor(object):
     def __init__(self,train=True):
         a=1
@@ -85,6 +90,10 @@ class Monitor(object):
                 win=self.value_window,
                 update='append')
 
+
+
+
+
 class SacAgent:
 
     def __init__(self, env, log_dir, num_steps=3000000, batch_size=256, 
@@ -114,7 +123,11 @@ class SacAgent:
             "cuda" if cuda and torch.cuda.is_available() else "cpu")
         print(self.device)
         print(self.env.observation_space.shape[0])
+
+        # yeh: There is no reward_num attribute in the offline environment
+        self.env.reward_num = self.env.obj_dim
         print(self.env.reward_num)
+
         self.policy = GaussianPolicy(
             self.env.observation_space.shape[0]+self.env.reward_num,
             self.env.action_space.shape[0],
@@ -217,6 +230,36 @@ class SacAgent:
         self.target_update_interval = target_update_interval
         self.eval_interval = eval_interval
 
+    def load_dataset_to_memory(self, trajs):
+        for traj in trajs:
+            for step in range(traj['raw_rewards'].shape[0]):
+                if self.per:
+                    # We need to give true done signal with addition to masked done
+                    # signal to calculate multi-step rewards.
+                    self.memory.append(
+                        traj['observations'][step],
+                        traj['preference'][step],
+                        traj['actions'][step],
+                        traj['raw_rewards'][step],
+                        traj['next_observations'][step],
+                        int(traj["terminals"][step]),
+                        1,
+                        episode_done=int(traj["terminals"][step]))
+                else:
+                    # We need to give true done signal with addition to masked done
+                    # signal to calculate multi-step rewards.
+
+                    self.memory.append(
+                        traj['observations'][step],
+                        traj['preference'][step],
+                        traj['actions'][step],
+                        traj['raw_rewards'][step],
+                        traj['next_observations'][step],
+                        int(traj["terminals"][step]),
+                        episode_done=int(traj["terminals"][step]))
+
+
+
     def get_pref(self):
         preference = np.random.rand( self.env.reward_num)
         preference = preference.astype(np.float32)
@@ -226,9 +269,15 @@ class SacAgent:
 
     def run(self):
         while True:
-            self.train_episode()
+            # self.train_episode()
             if self.steps > self.num_steps:
                 break
+
+    def run_offline(self, trajs):
+        for traj in trajs:
+            self.train_episode_offline(traj)
+            # if self.steps > self.num_steps:
+            #     break
 
     def is_update(self):
         return len(self.memory) > self.batch_size and\
@@ -289,6 +338,100 @@ class SacAgent:
 
         return target_q
 
+    def train_episode_offline(self, traj):
+        # self.episodes += 1
+        episode_reward = 0.
+        episode_steps = 0
+        done = False
+        state = self.env.reset()
+
+        # Sample preference from prefernence space
+        preference = self.get_pref()
+        if self.env.reward_num == 3:
+            PREF_ = np.load("3pref_table.npy")
+        elif self.env.reward_num == 4:
+            PREF_ = np.load("4pref_table.npy")
+        elif self.env.reward_num == 5:
+            PREF_ = np.load("5pref_table.npy")
+        else:
+            PREF_ = PREF
+
+        for step in range(traj['raw_rewards'].shape[0]):
+            ## Just fixed
+            # action = self.act(state, preference)
+            # # action = self.act(state)
+            # next_state, reward, done, _ = self.env.step(action)
+            self.steps += 1
+            episode_steps += 1
+            # episode_reward += reward
+
+            # ignore done if the agent reach time horizons
+            # (set done=True only when the agent fails)
+            # if episode_steps >= self.env.max_episode_steps:
+            #     masked_done = False
+            # else:
+            #     masked_done = done
+
+            if self.per:
+                self.memory.append(
+                    traj['observations'][step],
+                    traj['preference'][step],
+                    traj['actions'][step],
+                    traj['raw_rewards'][step],
+                    traj['next_observations'][step],
+                    int(traj["terminals"][step]),
+                    1,
+                    episode_done=int(traj["terminals"][step]))
+            else:
+                    # We need to give true done signal with addition to masked done
+                    # signal to calculate multi-step rewards.
+                self.memory.append(
+                    traj['observations'][step],
+                    traj['preference'][step],
+                    traj['actions'][step],
+                    traj['raw_rewards'][step],
+                    traj['next_observations'][step],
+                    int(traj["terminals"][step]),
+                    episode_done=int(traj["terminals"][step]))
+
+                '''
+                batch = to_batch(
+                    state, preference, action, reward, next_state, masked_done,
+                    self.device)
+
+                with torch.no_grad():
+                    curr_q1, curr_q2 = self.calc_current_q(*batch)
+                target_q = self.calc_target_q(*batch)
+                error = torch.abs(curr_q1 - target_q).item()
+                # We need to give true done signal with addition to masked done
+                # signal to calculate multi-step rewards.
+                self.memory.append(
+                    state, preference, action, reward, next_state, masked_done, error,
+                    episode_done=done)
+            else:
+                # We need to give true done signal with addition to masked done
+                # signal to calculate multi-step rewards.
+
+                self.memory.append(
+                    state, preference, action, reward, next_state, masked_done,
+                    episode_done=done)
+            '''
+
+            if self.is_update():
+                for _ in range(self.updates_per_step):
+                    self.learn()
+
+        # for ite in range(self.env.max_episode_steps): #self.n_steps_per_iter):
+        #     for _ in range(self.updates_per_step):
+        #         self.learn()
+
+            if self.steps % self.eval_interval == 0:
+                for i in range(len(PREF_)):
+                    # self.evaluate(PREF_[i],self.monitor[i],i)
+                    self.evaluate_(PREF_[i], i)
+                if self.steps % self.model_saved_step == 0:
+                    self.save_models(self.steps / self.model_saved_step)
+
     def train_episode(self):
         self.episodes += 1
         episode_reward = 0.
@@ -310,10 +453,14 @@ class SacAgent:
             ## Just fixed
             action = self.act(state, preference)
             #action = self.act(state)
-            next_state, reward, done, _ = self.env.step(action)
+            # next_state, reward, done, _ = self.env.step(action)
+            # episode_reward += reward
+            next_state, _, done, info = self.env.step(action)
+            episode_reward += info['obj']
+
             self.steps += 1
             episode_steps += 1
-            episode_reward += reward
+
 
             # ignore done if the agent reach time horizons
             # (set done=True only when the agent fails)
@@ -496,7 +643,7 @@ class SacAgent:
         return entropy_loss
 
     def evaluate_(self, preference, ind):
-        episodes = 10
+        episodes = 5
         returns = np.empty((episodes,self.env.reward_num))
         preference = np.array(preference)
         for i in range(episodes):
@@ -509,8 +656,10 @@ class SacAgent:
                 action = self.exploit(state,preference )
                 trace.append(list(state))
                 actions.append(list(action))
-                next_state, reward, done, _ = self.env.step(action)
-                episode_reward += reward
+                # next_state, reward, done, _ = self.env.step(action)
+                # episode_reward += reward
+                next_state, _, done, info = self.env.step(action)
+                episode_reward += info['obj']
                 state = next_state
 
             returns[i] = episode_reward
@@ -522,7 +671,15 @@ class SacAgent:
         with torch.no_grad():
             q1_loss, q2_loss, errors, mean_q1, mean_q2 =\
                             self.calc_critic_loss(batch, 1, p, 0)
-        #monitor.update(self.steps/self.eval_interval, np.dot(preference,mean_return), *mean_return, q1_loss.mean().item())
+        # monitor.update(self.steps/self.eval_interval, np.dot(preference,mean_return), *mean_return, q1_loss.mean().item())
+
+        eval_ep = int(self.steps / self.eval_interval)
+        writer.add_scalar("train/loss", q1_loss.mean().item(), eval_ep)
+        writer.add_scalar("eval/total_return", np.dot(preference,mean_return), eval_ep)
+
+        pref_str = np.array2string(preference, formatter={'float_kind': lambda x: "%.2f" % x}) + "/obj"
+        for i in range(mean_return.shape[0]):
+            writer.add_scalar("eval/" + pref_str + str(i), mean_return[i], eval_ep)
 
 
         path = os.path.join(self.log_dir, 'summary')
@@ -554,8 +711,10 @@ class SacAgent:
                 action = self.exploit(state,preference )
                 trace.append(list(state))
                 actions.append(list(action))
-                next_state, reward, done, _ = self.env.step(action)
-                episode_reward += reward
+                # next_state, reward, done, _ = self.env.step(action)
+                # episode_reward += reward
+                next_state, _, done, info = self.env.step(action)
+                episode_reward += info['obj']
                 state = next_state
 
             returns[i] = episode_reward
