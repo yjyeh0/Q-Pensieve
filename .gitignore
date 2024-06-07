@@ -127,3 +127,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+/logs/
+/runs/
+/.idea/vcs.xml
+/.idea/Q-Pensieve_1.iml

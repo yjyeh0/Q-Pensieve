@@ -273,9 +273,17 @@ class SacAgent:
             if self.steps > self.num_steps:
                 break
 
-    def run_offline(self, trajs):
+    def run_offline(self, trajs, num_step_to_learn):
+        self.num_step_to_learn = num_step_to_learn
+        returns = []
         for traj in trajs:
-            self.train_episode_offline(traj)
+            traj['rewards'] = np.sum(np.multiply(traj['raw_rewards'], traj['preference']), axis=1)
+            returns.append(traj['rewards'].sum())
+
+        sorted_inds = np.argsort(returns)  # lowest to highest
+
+        for i in range(sorted_inds.shape[0]):
+            self.train_episode_offline(trajs[sorted_inds[i]])
             # if self.steps > self.num_steps:
             #     break
 
@@ -417,7 +425,7 @@ class SacAgent:
                     episode_done=done)
             '''
 
-            if self.is_update():
+            if self.is_update() and self.steps % self.num_step_to_learn == 0:
                 for _ in range(self.updates_per_step):
                     self.learn()
 
@@ -547,7 +555,10 @@ class SacAgent:
         
         q1_loss, q2_loss, errors, mean_q1, mean_q2 =\
             self.calc_critic_loss(batch, weights, preference, PREF_SET)
-        
+
+
+        writer.add_scalar("train/loss", q1_loss.item(), int(self.steps / self.num_step_to_learn))
+
         policy_loss, entropies = self.calc_policy_loss(batch, weights, preference, PREF_SET)
 
         update_params(
@@ -665,16 +676,17 @@ class SacAgent:
             returns[i] = episode_reward
             print(episode_reward)
         mean_return = np.mean(returns, axis=0)
-        
-        batch = self.memory.sample(self.batch_size) 
-        p = torch.tensor(preference ,device = self.device, dtype=torch.float32)
-        with torch.no_grad():
-            q1_loss, q2_loss, errors, mean_q1, mean_q2 =\
-                            self.calc_critic_loss(batch, 1, p, 0)
-        # monitor.update(self.steps/self.eval_interval, np.dot(preference,mean_return), *mean_return, q1_loss.mean().item())
+
+
+        # batch = self.memory.sample(self.batch_size)
+        # p = torch.tensor(preference ,device = self.device, dtype=torch.float32)
+        # with torch.no_grad():
+        #     q1_loss, q2_loss, errors, mean_q1, mean_q2 =\
+        #                     self.calc_critic_loss(batch, 1, p, 0)
+        # # monitor.update(self.steps/self.eval_interval, np.dot(preference,mean_return), *mean_return, q1_loss.mean().item())
 
         eval_ep = int(self.steps / self.eval_interval)
-        writer.add_scalar("train/loss", q1_loss.mean().item(), eval_ep)
+        # writer.add_scalar("train/loss", q1_loss.mean().item(), eval_ep)
         writer.add_scalar("eval/total_return", np.dot(preference,mean_return), eval_ep)
 
         pref_str = np.array2string(preference, formatter={'float_kind': lambda x: "%.2f" % x}) + "/obj"

@@ -129,7 +129,8 @@ def run():
     agent = SacAgent(env=env, log_dir=log_dir, **configs)
     # agent.load_dataset_to_memory(trajectories)
     # agent.run()
-    agent.run_offline(trajectories)
+    num_step_to_learn = int(len(trajectories) * 500 / configs['num_steps'])
+    agent.run_offline(trajectories, num_step_to_learn)
 
 
 if __name__ == '__main__':
