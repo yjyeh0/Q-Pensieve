@@ -65,7 +65,7 @@ def run():
         'start_steps': 10000,
         'log_interval': 10,
         'target_update_interval': 1,
-        'eval_interval': 5000, #50000,
+        'eval_interval': 10000, #50000,
         'cuda': args.cuda,
         'seed': args.seed,
         'cuda_device': args.cuda_device,
@@ -128,9 +128,9 @@ def run():
 
     agent = SacAgent(env=env, log_dir=log_dir, **configs)
     # agent.load_dataset_to_memory(trajectories)
-    # agent.run()
-    num_step_to_learn = int(len(trajectories) * 500 / configs['num_steps'])
-    agent.run_offline(trajectories, num_step_to_learn)
+    agent.run()
+    # num_step_to_learn = int(len(trajectories) * 500 / configs['num_steps'])
+    # agent.run_offline(trajectories, num_step_to_learn)
 
 
 if __name__ == '__main__':

@@ -17,6 +17,8 @@ from datetime import datetime
 import time
 
 from torch.utils.tensorboard import SummaryWriter
+import matplotlib.pyplot as plt
+
 writer = SummaryWriter()
 
 PREF = [[0.9, 0.1], [0.5, 0.5], [0.1, 0.9]]
@@ -230,6 +232,8 @@ class SacAgent:
         self.target_update_interval = target_update_interval
         self.eval_interval = eval_interval
 
+        self.q1_loss = 0
+
     def load_dataset_to_memory(self, trajs):
         for traj in trajs:
             for step in range(traj['raw_rewards'].shape[0]):
@@ -269,7 +273,7 @@ class SacAgent:
 
     def run(self):
         while True:
-            # self.train_episode()
+            self.train_episode()
             if self.steps > self.num_steps:
                 break
 
@@ -281,6 +285,10 @@ class SacAgent:
             returns.append(traj['rewards'].sum())
 
         sorted_inds = np.argsort(returns)  # lowest to highest
+
+        a = np.array(returns)
+        plt.scatter(range(sorted_inds.shape[0]), a[sorted_inds], alpha=0.5, s=1)
+        plt.show()
 
         for i in range(sorted_inds.shape[0]):
             self.train_episode_offline(trajs[sorted_inds[i]])
@@ -427,13 +435,15 @@ class SacAgent:
 
             if self.is_update() and self.steps % self.num_step_to_learn == 0:
                 for _ in range(self.updates_per_step):
-                    self.learn()
+                    self.q1_loss = self.learn()
 
         # for ite in range(self.env.max_episode_steps): #self.n_steps_per_iter):
         #     for _ in range(self.updates_per_step):
         #         self.learn()
 
             if self.steps % self.eval_interval == 0:
+                writer.add_scalar("train/loss", self.q1_loss, int(self.steps / self.eval_interval ))
+
                 for i in range(len(PREF_)):
                     # self.evaluate(PREF_[i],self.monitor[i],i)
                     self.evaluate_(PREF_[i], i)
@@ -464,7 +474,8 @@ class SacAgent:
             # next_state, reward, done, _ = self.env.step(action)
             # episode_reward += reward
             next_state, _, done, info = self.env.step(action)
-            episode_reward += info['obj']
+            reward = info['obj']
+            episode_reward += reward
 
             self.steps += 1
             episode_steps += 1
@@ -472,7 +483,7 @@ class SacAgent:
 
             # ignore done if the agent reach time horizons
             # (set done=True only when the agent fails)
-            if episode_steps >= self.env.max_episode_steps:
+            if episode_steps >= self.env.spec.max_episode_steps:
                 masked_done = False
             else:
                 masked_done = done
@@ -501,9 +512,10 @@ class SacAgent:
 
             if self.is_update():
                 for _ in range(self.updates_per_step):
-                    self.learn()
+                    self.q1_loss = self.learn()
 
             if self.steps % self.eval_interval == 0:
+                writer.add_scalar("train/loss", self.q1_loss, int(self.steps / self.eval_interval ))
                 for i in range(len(PREF_)):
                     #self.evaluate(PREF_[i],self.monitor[i],i)
                     self.evaluate_(PREF_[i],i)
@@ -527,6 +539,7 @@ class SacAgent:
             soft_update(self.critic_target, self.critic, self.tau)
 
         if self.learning_steps % self.q_frequency == 0 and self.learning_steps > 20000:
+
             co = copy.deepcopy(self.critic)
             self.Q_memory.append(co)
         
@@ -546,6 +559,11 @@ class SacAgent:
         preference = self.get_pref()
         preference = torch.tensor(preference ,device = self.device)
         PREF_SET.append(preference)
+
+        # indices = np.random.randint(low=0, high=self.batch_size, size = self.set_num-1)
+        # a = [x for x in batch[1][indices]]
+        # PREF_SET = PREF_SET + a
+
         for _ in range(self.set_num-1):
             p = self.get_pref()
             p = torch.tensor(p ,device = self.device)
@@ -555,9 +573,6 @@ class SacAgent:
         
         q1_loss, q2_loss, errors, mean_q1, mean_q2 =\
             self.calc_critic_loss(batch, weights, preference, PREF_SET)
-
-
-        writer.add_scalar("train/loss", q1_loss.item(), int(self.steps / self.num_step_to_learn))
 
         policy_loss, entropies = self.calc_policy_loss(batch, weights, preference, PREF_SET)
 
@@ -580,6 +595,9 @@ class SacAgent:
             self.memory.update_priority(indices, errors.cpu().numpy())
         
         self.QM.update(self.steps, self.cur_p, self.cur_e, self.qmem_p, self.qmem_e)
+
+        return q1_loss.item()
+
     def calc_critic_loss(self, batch, weights, preference, PREF):
         
 
@@ -631,13 +649,13 @@ class SacAgent:
                 q1 = torch.tensordot(q1, preference, dims = 1)
                 q2 = torch.tensordot(q2, preference, dims = 1)
                 q = torch.min(q1, q2)
-                
-                l = - q - self.alpha * entropy      # yjyeh: ??    sup (alpha.log()-lamda.Q)   here: use -alpha instead of alpha
-                losses.append(l)
+
+                # l = - q - self.alpha * entropy
+                l = - q - self.alpha * (entropy.squeeze())
 
         losses = torch.stack(losses, dim = 1)
-        policy_loss, idx =  torch.min(losses, 1)     # yjyeh:?? sup
-        ll=idx.detach().cpu()[:,0].tolist()
+        policy_loss, idx =  torch.min(losses, 1)
+        # ll=idx.detach().cpu()[:,0].tolist()
         policy_loss = torch.mean(policy_loss)
 
         
@@ -687,7 +705,7 @@ class SacAgent:
 
         eval_ep = int(self.steps / self.eval_interval)
         # writer.add_scalar("train/loss", q1_loss.mean().item(), eval_ep)
-        writer.add_scalar("eval/total_return", np.dot(preference,mean_return), eval_ep)
+        writer.add_scalar("eval/tot_return" + np.array2string(preference, formatter={'float_kind': lambda x: "%.2f" % x}), np.dot(preference,mean_return), eval_ep)
 
         pref_str = np.array2string(preference, formatter={'float_kind': lambda x: "%.2f" % x}) + "/obj"
         for i in range(mean_return.shape[0]):
