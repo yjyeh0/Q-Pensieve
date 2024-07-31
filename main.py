@@ -26,7 +26,7 @@ def run():
     # parser.add_argument('--env_id', type=str, default='dst_d-v0')
     parser.add_argument('--env_id', type=str, default='MO-Hopper-v2')
     parser.add_argument('--cuda', action='store_true', default=True)
-    parser.add_argument('--cuda_device', type=int, default=0)
+    parser.add_argument('--cuda_device', type=int, default=1)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--prefer', type=int, default=4)
     parser.add_argument('--buf_num', type=int, default=0)
@@ -126,12 +126,29 @@ def run():
         'logs', args.env_id,
         f'MOSAC-set{args.prefer}-buf{args.buf_num}-seed{args.seed}_freq{args.q_freq}')
 
-    agent = SacAgent(env=env, log_dir=log_dir, **configs)
+    # state_mean = state_norm_params[args.env_id]["mean"]
+    # state_std = np.sqrt(state_norm_params[args.env_id]["var"])
+    agent = SacAgent(env=env, log_dir=log_dir, state_mean=state_mean, state_std=state_std, **configs)
     # agent.load_dataset_to_memory(trajectories)
-    agent.run()
+    #agent.run()
     # num_step_to_learn = int(len(trajectories) * 500 / configs['num_steps'])
     # agent.run_offline(trajectories, num_step_to_learn)
 
+    # agent.on_line = True
+    agent.run_offline(trajectories)
+
+    agent.num_steps =  agent.num_steps + agent.num_steps
+
+    # agent.load_models(5.0)
+
+    # mo_rewards = []
+    # for traj in trajectories:
+    #     traj['rewards'] = np.sum(np.multiply(traj['raw_rewards'], traj['preference']), axis=1)
+    #     mo_rewards.append(traj['raw_rewards'])
+    # agent.rewards_mean = np.concatenate(mo_rewards).mean(0)
+    # agent.rewards_std = np.concatenate(mo_rewards).std(0)
+
+    agent.run()
 
 if __name__ == '__main__':
 

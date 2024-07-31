@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from torch.distributions import Normal
 from rltorch.network import create_linear_network
+# from builder import create_linear_network      #batch_norm
 import os
 
 
@@ -46,6 +47,37 @@ class TwinnedQNetwork(BaseNetwork):#Critic
         q2 = self.Q2(x)
         return q1, q2
 
+class MultiQNetwork(BaseNetwork):#Critic
+
+    def __init__(self, num_q, num_inputs, num_actions, num_weights, hidden_units=[256, 256],
+                 initializer='xavier'):
+        super(MultiQNetwork, self).__init__()
+
+        self.num_q = num_q
+        self.Qn = nn.ModuleList()
+
+        for i in range(self.num_q):
+            self.Qn.append(
+                QNetwork(num_inputs, num_actions, num_weights, hidden_units, initializer) )
+
+
+        # self.Q1 = QNetwork(
+        #     num_inputs, num_actions, num_weights, hidden_units, initializer)
+        # self.Q2 = QNetwork(
+        #     num_inputs, num_actions, num_weights, hidden_units, initializer)
+
+    def forward(self, states, actions, preferences):
+        x = torch.cat([states, actions ,preferences], dim=1) # preferences should be ω'
+        # preds = ptu.zeros((len(self.models), *input.shape[:-1], self.output_size))
+        # for i in range(len(self.Qn)):
+        #     preds[i] = self.Qn[i](x)
+        # return preds
+
+        q_n = [Q(x) for Q in self.Qn]
+        return tuple(q_n)
+        # q1 = self.Q1(x)
+        # q2 = self.Q2(x)
+        # return q1, q2
 
 class GaussianPolicy(BaseNetwork):#Policy
     LOG_STD_MAX = 2

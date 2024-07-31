@@ -13,14 +13,20 @@ def to_batch(state, action, reward, next_state, done, device):
     return state, preference, action, reward, next_state, done
 
 
-def update_params(optim, network, loss, grad_clip=None, retain_graph=False):
+def update_params(optim, network, loss, grad_clip=None, retain_graph=False, print_on=False):
     optim.zero_grad()
     with torch.autograd.set_detect_anomaly(True):
         loss.backward(retain_graph=retain_graph)
+
+    if print_on and network is not None:
+        for name, p in network.named_parameters():
+            if not torch.all(p.grad):
+                print(name, p.grad)
+
     if grad_clip is not None:
         for p in network.modules():
             torch.nn.utils.clip_grad_norm_(p.parameters(), grad_clip)
-    #optim.step()
+    optim.step()
 
 
 def soft_update(target, source, tau):

@@ -8,7 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 from rltorch.memory import MultiStepMemory, PrioritizedMemory
 from base import QMemory
 
-from model import TwinnedQNetwork, GaussianPolicy
+from model import MultiQNetwork, GaussianPolicy
 from utils import grad_false, hard_update, soft_update, to_batch,\
     update_params, RunningMeanStats
 import random
@@ -18,6 +18,7 @@ import time
 
 from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
+import pickle
 
 writer = SummaryWriter()
 
@@ -98,14 +99,22 @@ class Monitor(object):
 
 class SacAgent:
 
-    def __init__(self, env, log_dir, num_steps=3000000, batch_size=256, 
+    def __init__(self, env, log_dir, state_mean, state_std,
+                 num_steps=3000000, batch_size=256,
                  lr=0.0003, hidden_units=[256, 256], memory_size=1e6, prefer_num = 8, buf_num = 0,
                  gamma=0.99, tau=0.005, entropy_tuning=True, ent_coef=0.2,
                  multi_step=1, per=False, alpha=0.6, beta=0.4,
                  beta_annealing=0.0001, grad_clip=None, updates_per_step=1,
                  start_steps=10000, log_interval=10, target_update_interval=1,
-                 eval_interval=1000, cuda=True, seed=0, cuda_device=0, q_frequency=1000, model_saved_step=100000):
+                 eval_interval=1000, cuda=True, seed=0, cuda_device=0, q_frequency=1000, model_saved_step=100000, on_line=False):
+        # yeh add
+        self.on_line = on_line
+        self.num_q = 10
+        self.print_on = False
+
         self.env = env
+        # self.state_mean = state_mean
+        # self.state_std = state_std
 
         torch.manual_seed(seed)
         if cuda:
@@ -134,12 +143,24 @@ class SacAgent:
             self.env.observation_space.shape[0]+self.env.reward_num,
             self.env.action_space.shape[0],
             hidden_units=hidden_units).to(self.device)
-        self.critic = TwinnedQNetwork(
+        # self.critic = TwinnedQNetwork(
+        #     self.env.observation_space.shape[0],
+        #     self.env.action_space.shape[0],
+        #     self.env.reward_num,
+        #     hidden_units=hidden_units).to(self.device)
+        # self.critic_target = TwinnedQNetwork(
+        #     self.env.observation_space.shape[0],
+        #     self.env.action_space.shape[0],
+        #     self.env.reward_num,
+        #     hidden_units=hidden_units).to(self.device).eval()
+        self.critic = MultiQNetwork(
+            self.num_q,
             self.env.observation_space.shape[0],
             self.env.action_space.shape[0],
             self.env.reward_num,
             hidden_units=hidden_units).to(self.device)
-        self.critic_target = TwinnedQNetwork(
+        self.critic_target = MultiQNetwork(
+            self.num_q,
             self.env.observation_space.shape[0],
             self.env.action_space.shape[0],
             self.env.reward_num,
@@ -151,8 +172,9 @@ class SacAgent:
         grad_false(self.critic_target)
 
         self.policy_optim = Adam(self.policy.parameters(), lr=lr)
-        self.q1_optim = Adam(self.critic.Q1.parameters(), lr=lr)
-        self.q2_optim = Adam(self.critic.Q2.parameters(), lr=lr)
+        # self.q1_optim = Adam(self.critic.Q1.parameters(), lr=lr)
+        # self.q2_optim = Adam(self.critic.Q2.parameters(), lr=lr)
+        self.qn_optim = [Adam(Q.parameters(), lr=lr) for Q in self.critic.Qn]
 
         if entropy_tuning:
             # Target entropy is -|A|.
@@ -234,6 +256,15 @@ class SacAgent:
 
         self.q1_loss = 0
 
+
+    # def eval(self):
+    #     self.policy.eval()
+    #     self.critic.eval()
+    #
+    # def train(self):
+    #     self.policy.train()
+    #     self.critic.train()
+
     def load_dataset_to_memory(self, trajs):
         for traj in trajs:
             for step in range(traj['raw_rewards'].shape[0]):
@@ -277,23 +308,57 @@ class SacAgent:
             if self.steps > self.num_steps:
                 break
 
-    def run_offline(self, trajs, num_step_to_learn):
-        self.num_step_to_learn = num_step_to_learn
+    def run_offline(self, trajs):
         returns = []
+
+        mo_returns = []
+        mo_rewards = []
         for traj in trajs:
             traj['rewards'] = np.sum(np.multiply(traj['raw_rewards'], traj['preference']), axis=1)
             returns.append(traj['rewards'].sum())
+            mo_returns.append(np.sum(traj['raw_rewards'], 0))
+            mo_rewards.append(traj['raw_rewards'])
 
-        sorted_inds = np.argsort(returns)  # lowest to highest
+        # self.rewards_mean = np.concatenate(mo_rewards).mean(0)
+        # self.rewards_std= np.concatenate(mo_rewards).std(0)
+        # # self.rewards_max = np.concatenate(mo_rewards).max(0)
+        # self.rewards_min = np.concatenate(mo_rewards).min(0)
+        # self.rewards_max_min = np.concatenate(mo_rewards).max(0) - self.rewards_min
 
-        a = np.array(returns)
-        plt.scatter(range(sorted_inds.shape[0]), a[sorted_inds], alpha=0.5, s=1)
-        plt.show()
+        self.plot = False
+        if self.plot:
+            mo_returns = np.stack(mo_returns, axis=-1)
+            # plt.scatter(mo_returns[0], mo_returns[1], alpha=0.5, s=1)
+            plt.scatter(range(len(mo_returns[0])), mo_returns[0], alpha=0.5, s=1)
+            plt.show()
 
-        for i in range(sorted_inds.shape[0]):
-            self.train_episode_offline(trajs[sorted_inds[i]])
-            # if self.steps > self.num_steps:
-            #     break
+            plt.scatter(range(len(mo_returns[1])), mo_returns[1], alpha=0.5, s=1)
+            plt.show()
+
+            sorted_inds = np.argsort(returns)  # lowest to highest
+            a = np.array(returns)
+            # plt.scatter(range(sorted_inds.shape[0]), a[sorted_inds], alpha=0.5, s=1)
+            plt.scatter(range(sorted_inds.shape[0]), a, alpha=0.5, s=1)
+            plt.show()
+
+
+        #
+        # for i in range(sorted_inds.shape[0]):
+        #     self.train_episode_offline(trajs[sorted_inds[i]])
+        #     # if self.steps > self.num_steps:
+        #     #     break
+
+        # for traj in trajs:
+        #     self.train_episode_offline(traj)
+        #     if self.steps > self.num_steps:
+        #         break
+
+        for i in range(len(returns)):
+            self.train_episode_offline(trajs[i])
+            if self.steps > self.num_steps:
+                break
+
+
 
     def is_update(self):
         return len(self.memory) > self.batch_size and\
@@ -315,40 +380,41 @@ class SacAgent:
         state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         preference = torch.FloatTensor(preference).unsqueeze(0).to(self.device)
         with torch.no_grad():
+            # self.eval()
             action, _, _ = self.policy.sample(state, preference)
+            # self.train()
         return action.cpu().numpy().reshape(-1)
 
     def exploit(self, state, preference):
         # act without randomness
- 
         state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         preference = torch.FloatTensor(preference).unsqueeze(0).to(self.device)
         with torch.no_grad():
+            # self.eval()
             _, _, action = self.policy.sample(state, preference)
+            # self.train()
         return action.cpu().numpy().reshape(-1)
 
     def calc_current_q(self, states, preference, actions, rewards, next_states, dones):
-
-        curr_q1, curr_q2 = self.critic(states, actions, preference)
-        
-
-        return curr_q1, curr_q2
+        curr_qn = self.critic(states, actions, preference)
+        return curr_qn
 
     def calc_target_q(self, states, preference, actions, rewards, next_states, dones):
         with torch.no_grad():
             next_actions, next_entropies, _ = self.policy.sample(next_states, preference)
-            next_q1, next_q2 = self.critic_target(next_states, next_actions, preference)           
+            next_qn = self.critic_target(next_states, next_actions, preference)
             
             #We choose argmin_Q (ωTQ)
-            w_q1 = torch.einsum('ij,j->i',[next_q1, preference[0] ])
-            w_q2 = torch.einsum('ij,j->i',[next_q2, preference[0] ])
-            mask = torch.lt(w_q1,w_q2)
-            mask = mask.repeat([1,self.env.reward_num])
-            mask = torch.reshape(mask, next_q1.shape)
+            w_qn = [torch.einsum('ij,j->i', [next_q, preference[0]]) for next_q in next_qn]
 
-            minq = torch.where( mask, next_q1, next_q2)
+            tmp_w_qn = torch.stack(w_qn, 1)
+            indices = torch.min(tmp_w_qn, 1)[1]
+
+            tmp_next_qn = torch.stack(next_qn, 1)
+            inds = indices.unsqueeze(-1).repeat([1,self.env.reward_num]).unsqueeze(1)
+            minq = torch.gather(tmp_next_qn, 1, inds).squeeze(1)
                 
-            next_q = minq + self.alpha * next_entropies     # yjyeh:?? q-alph.log(pi(next_action|next state)
+            next_q = minq + self.alpha * next_entropies     # yjyeh: q-alph.log(pi(next_action|next state)
 
         target_q = rewards + (1.0 - dones) * self.gamma_n * next_q
 
@@ -383,31 +449,54 @@ class SacAgent:
 
             # ignore done if the agent reach time horizons
             # (set done=True only when the agent fails)
-            # if episode_steps >= self.env.max_episode_steps:
-            #     masked_done = False
-            # else:
-            #     masked_done = done
+            done = traj["terminals"][step]
+            if episode_steps >= self.env.spec.max_episode_steps:
+                masked_done = False
+            else:
+                masked_done = done
 
             if self.per:
+                batch = to_batch(
+                    traj['observations'][step],
+                    traj['preference'][step],
+                    traj['actions'][step],
+                    traj['raw_rewards'][step],
+                    traj['next_observations'][step],
+                    masked_done,
+                    self.device)
+
+                with torch.no_grad():
+                    curr_q1, curr_q2 = self.calc_current_q(*batch)
+                target_q = self.calc_target_q(*batch)
+                error = torch.abs(curr_q1 - target_q).item()
+
                 self.memory.append(
                     traj['observations'][step],
                     traj['preference'][step],
                     traj['actions'][step],
                     traj['raw_rewards'][step],
                     traj['next_observations'][step],
-                    int(traj["terminals"][step]),
-                    1,
+                    masked_done,
+                    error,
                     episode_done=int(traj["terminals"][step]))
             else:
                     # We need to give true done signal with addition to masked done
                     # signal to calculate multi-step rewards.
+                # s = np.clip((traj['observations'][step] - self.state_mean) / self.state_std, -10, 10)
+                # ns = np.clip((traj['next_observations'][step] - self.state_mean) / self.state_std, -10, 10)
+
+                # step_rewards = (traj['raw_rewards'][step] - self.rewards_mean) / self.rewards_std
+                # step_rewards = (traj['raw_rewards'][step] - self.rewards_min) / self.rewards_max_min
                 self.memory.append(
                     traj['observations'][step],
+                    # s,
                     traj['preference'][step],
                     traj['actions'][step],
                     traj['raw_rewards'][step],
+                    # step_rewards,
                     traj['next_observations'][step],
-                    int(traj["terminals"][step]),
+                    # ns,
+                    masked_done,
                     episode_done=int(traj["terminals"][step]))
 
                 '''
@@ -433,7 +522,7 @@ class SacAgent:
                     episode_done=done)
             '''
 
-            if self.is_update() and self.steps % self.num_step_to_learn == 0:
+            if self.is_update():
                 for _ in range(self.updates_per_step):
                     self.q1_loss = self.learn()
 
@@ -506,8 +595,18 @@ class SacAgent:
                 # We need to give true done signal with addition to masked done
                 # signal to calculate multi-step rewards.
 
+                # s = np.clip((state - self.state_mean) / self.state_std, -10, 10)
+                # ns = np.clip((next_state - self.state_mean) / self.state_std, -10, 10)
+                # self.memory.append(
+                #     s, preference, action, reward, ns, masked_done,
+                #     episode_done=done)
+
+                # step_rewards = (reward - self.rewards_mean) / self.rewards_std
                 self.memory.append(
-                    state, preference, action, reward, next_state, masked_done,
+                    state, preference, action,
+                    reward,
+                    # step_rewards,
+                    next_state, masked_done,
                     episode_done=done)
 
             if self.is_update():
@@ -539,7 +638,6 @@ class SacAgent:
             soft_update(self.critic_target, self.critic, self.tau)
 
         if self.learning_steps % self.q_frequency == 0 and self.learning_steps > 20000:
-
             co = copy.deepcopy(self.critic)
             self.Q_memory.append(co)
         
@@ -553,52 +651,56 @@ class SacAgent:
             weights = 1.
 
 
-        rand = random.randint(0, len(PREF)-1)
-        PREF_SET = []
         # Form preference set W containing the updating preference
         preference = self.get_pref()
         preference = torch.tensor(preference ,device = self.device)
-        PREF_SET.append(preference)
 
-        # indices = np.random.randint(low=0, high=self.batch_size, size = self.set_num-1)
-        # a = [x for x in batch[1][indices]]
-        # PREF_SET = PREF_SET + a
+        # q1_loss, q2_loss, errors, mean_q1, mean_q2 =\
+        qn_loss, errors, mean_qn = self.calc_critic_loss(batch, weights, preference)
 
-        for _ in range(self.set_num-1):
-            p = self.get_pref()
-            p = torch.tensor(p ,device = self.device)
-            PREF_SET.append(p)
+        if self.on_line:
+            PREF_SET = []
+            PREF_SET.append(preference)
 
-               
-        
-        q1_loss, q2_loss, errors, mean_q1, mean_q2 =\
-            self.calc_critic_loss(batch, weights, preference, PREF_SET)
+            # indice = np.random.randint(low=0, high=self.batch_size, size = self.set_num-1)
+            # a = [x for x in batch[1][indice]]
+            # PREF_SET = PREF_SET + a
 
-        policy_loss, entropies = self.calc_policy_loss(batch, weights, preference, PREF_SET)
+            for _ in range(self.set_num-1):
+                p = self.get_pref()
+                p = torch.tensor(p ,device = self.device)
+                PREF_SET.append(p)
 
-        update_params(
-            self.q1_optim, self.critic.Q1, q1_loss, self.grad_clip)
-        update_params(
-            self.q2_optim, self.critic.Q2, q2_loss, self.grad_clip)
-        update_params(
-            self.policy_optim, self.policy, policy_loss, self.grad_clip)
-        self.q1_optim.step()
-        self.q2_optim.step()
-        self.policy_optim.step()
+            policy_loss, entropies = self.calc_policy_loss(batch, weights, preference, PREF_SET)
+        else:
+            policy_loss, entropies = self.offline_calc_policy_loss(batch, weights, preference)
 
         if self.entropy_tuning:
             entropy_loss = self.calc_entropy_loss(entropies, weights)
             update_params(self.alpha_optim, None, entropy_loss)
             self.alpha = self.log_alpha.exp()
+
+        update_params(
+            self.policy_optim, self.policy, policy_loss, self.grad_clip, print_on=self.print_on)
+
+
+        # update_params(
+        #     self.q1_optim, self.critic.Q1, q1_loss, self.grad_clip)
+        # update_params(
+        #     self.q2_optim, self.critic.Q2, q2_loss, self.grad_clip)
+        for idx in range(len(self.qn_optim)):
+            update_params(
+                self.qn_optim[idx], self.critic.Qn[idx], qn_loss[idx], self.grad_clip, print_on=self.print_on)
+
         if self.per:
             # update priority weights
             self.memory.update_priority(indices, errors.cpu().numpy())
-        
-        self.QM.update(self.steps, self.cur_p, self.cur_e, self.qmem_p, self.qmem_e)
 
-        return q1_loss.item()
+        # self.QM.update(self.steps, self.cur_p, self.cur_e, self.qmem_p, self.qmem_e)
 
-    def calc_critic_loss(self, batch, weights, preference, PREF):
+        return qn_loss[0].item()
+
+    def calc_critic_loss(self, batch, weights, preference):
         
 
         states, _, actions, rewards, next_states, dones = batch
@@ -612,56 +714,179 @@ class SacAgent:
         
         D_pref = preference.repeat(self.batch_size,1)
 
-        curr_q1, curr_q2 = self.calc_current_q(states, D_pref, actions, rewards, next_states, dones)
-        
-    
+        curr_qn = self.calc_current_q(states, D_pref, actions, rewards, next_states, dones)
+
+        # writer.add_graph(self.critic, (states, actions, D_pref))
+
         target_q = self.calc_target_q(states, D_pref, actions, rewards, next_states, dones)
 
         # TD errors for updating priority weights
-        errors = torch.abs(curr_q1.detach() - target_q)
+        # errors = torch.abs(curr_q1.detach() - target_q)
+        # yeh: todo
+        errors = torch.abs(curr_qn[0].detach() - target_q)
         # We log means of Q to monitor training.
-        mean_q1 = curr_q1.detach().mean().item()
-        mean_q2 = curr_q2.detach().mean().item()
+        # mean_q1 = curr_q1.detach().mean().item()
+        # mean_q2 = curr_q2.detach().mean().item()
+        mean_qn = [curr_q.detach().mean().item() for curr_q in curr_qn]
       
 
         # Critic loss is mean squared TD errors with priority weights.
-        q1_loss = torch.mean(torch.tensordot((curr_q1 - target_q).pow(2), preference,dims=1) * weights)
-        q2_loss = torch.mean(torch.tensordot((curr_q2 - target_q).pow(2), preference,dims=1) * weights)
+        # q1_loss = torch.mean(torch.tensordot((curr_q1 - target_q).pow(2), preference,dims=1) * weights)
+        # q2_loss = torch.mean(torch.tensordot((curr_q2 - target_q).pow(2), preference,dims=1) * weights)
+        qn_loss = [torch.mean(torch.tensordot((curr_q - target_q).pow(2), preference, dims=1) * weights) for curr_q in curr_qn]
 
-        return q1_loss, q2_loss, errors, mean_q1, mean_q2
+        return qn_loss, errors, mean_qn
+
+    def offline_calc_policy_loss(self, batch, weights, preference):
+        start = time.time()
+        states, _, actions, rewards, next_states, dones = batch
+        preference_batch = preference.repeat(self.batch_size, 1)
+
+        # p_batch = torch.tensor(preference, device=self.device).repeat(self.batch_size, 1)
+        # sampled_action, entropy, _ = self.policy.sample(states, p_batch)
+
+        sampled_action, entropy, _ = self.policy.sample(states, preference_batch)
+        qn = self.critic(states, sampled_action, preference_batch)
+
+        # writer.add_graph(self.policy, (states, preference_batch))
+
+        w_qn = [torch.tensordot(q, preference, dims=1) for q in qn]
+        q = torch.min(torch.stack(w_qn, 1), 1)[0]
+
+        # q1 = torch.tensordot(q1, preference, dims=1)
+        # q2 = torch.tensordot(q2, preference, dims=1)
+        # q = torch.min(q1, q2)
+        policy_loss = - q - self.alpha * (entropy.squeeze())
+        policy_loss = torch.mean(policy_loss)
+
+        return policy_loss, entropy
+
+
+
+    # def calc_policy_loss_org(self, batch, weights, preference, PREF):
+    #     start = time.time()
+    #     states, _, actions, rewards, next_states, dones = batch
+    #     preference_batch = preference.repeat(self.batch_size, 1)
+    #
+    #     losses = []
+    #
+    #     c_cnt = 0
+    #     for a, c in enumerate([ self.critic]+self.Q_memory.sample() ): # Use critic from Q Replay Buffer
+    #         for b, i in enumerate(PREF): #Get Q from preference set W
+    #             p_batch = torch.tensor(i, device = self.device).repeat(self.batch_size, 1)
+    #             sampled_action, entropy, _ = self.policy.sample(states, p_batch)
+    #             if a == 0 and b == 0:
+    #                 e = entropy
+    #             qn = c(states, sampled_action, preference_batch)  #yeh ???
+    #             w_qn = [torch.tensordot(q, preference, dims=1) for q in qn]
+    #             q = torch.min(torch.stack(w_qn, 1), 1)[0]
+    #
+    #             # q1 = torch.tensordot(q1, preference, dims = 1)
+    #             # q2 = torch.tensordot(q2, preference, dims = 1)
+    #             # q = torch.min(q1, q2)
+    #
+    #             # l = - q - self.alpha * entropy
+    #             l = - q - self.alpha * (entropy.squeeze())
+    #             losses.append(l)
+    #
+    #     losses = torch.stack(losses, dim = 1)
+    #     policy_loss, idx =  torch.min(losses, 1)
+    #     # ll=idx.detach().cpu()[:,0].tolist()
+    #     policy_loss = torch.mean(policy_loss)
+    #
+    #
+    #     sampled_action, e, _ = self.policy.sample(states, preference_batch)
+    #
+    #     return policy_loss, e
+
+
+
+    # def calc_policy_loss(self, batch, weights, preference, PREF):
+    #     start = time.time()
+    #     states, _, actions, rewards, next_states, dones = batch
+    #     preference_batch = preference.repeat(self.batch_size * self.set_num, 1)
+    #
+    #     losses = []
+    #
+    #     c_cnt = 0
+    #     for a, c in enumerate([self.critic] + self.Q_memory.sample()):  # Use critic from Q Replay Buffer
+    #         prefs = torch.stack(PREF)
+    #         prefs_batch = prefs.repeat(self.batch_size, 1)   #w1w2w3w4 w1w2w3w4...w1w2w3w4  4*256
+    #         b_pref_states = states.unsqueeze(1).repeat(1, self.set_num, 1)   # dim = 256, 4, 17
+    #         b_pref_states = b_pref_states.reshape(-1, b_pref_states.shape[-1])  # dim = 256*4, 17
+    #
+    #         sampled_action, entropy_prefs, _ = self.policy.sample(b_pref_states, preference_batch)
+    #
+    #         if a == 0:
+    #             entropy_prefs = entropy_prefs.squeeze()     # 256*4
+    #             entropy_prefs = entropy_prefs.reshape(self.batch_size, -1)   # dim = [256, 4]
+    #             entropy_batch = entropy_prefs[:, 0]   # dim = 256
+    #             entropy = entropy_batch.unsqueeze(-1).repeat(1, 4).reshape(-1)  # dim = 256*4
+    #         qn = c(b_pref_states, sampled_action, prefs_batch)
+    #         w_qn = [torch.tensordot(q, preference, dims=1) for q in qn]
+    #         q = torch.min(torch.stack(w_qn, 1), 1)[0]
+    #         l = - q - self.alpha * entropy
+    #         l = l.reshape(self.set_num, -1)
+    #         losses.append(l)  # list[ 5 * [4, 256]]
+    #
+    #     losses = torch.stack(losses, dim=0)  # dim = [5, 4, 256]
+    #     losses = losses.reshape(-1, losses.shape[-1])    # dim = [20, 256]
+    #     policy_loss, idx = torch.min(losses, 0)
+    #     # ll=idx.detach().cpu()[:,0].tolist()
+    #     policy_loss = torch.mean(policy_loss)
+    #
+    #     # yeh ??
+    #     sampled_action, e, _ = self.policy.sample(states, preference_batch)
+    #
+    #     # return policy_loss, entropy_batch
+    #     return policy_loss, e
+
 
     def calc_policy_loss(self, batch, weights, preference, PREF):
         start = time.time()
         states, _, actions, rewards, next_states, dones = batch
-        preference_batch = preference.repeat(self.batch_size, 1)
-        
+        preference_batch = preference.repeat(self.batch_size * self.set_num, 1)
+
+        prefs = torch.stack(PREF)
+        prefs_batch = prefs.repeat(self.batch_size, 1)  # w1w2w3w4 w1w2w3w4...w1w2w3w4  4*256
+        b_pref_states = states.unsqueeze(1).repeat(1, self.set_num, 1)  # dim = 256, 4, 17
+        b_pref_states = b_pref_states.reshape(-1, b_pref_states.shape[-1])  # s1,s1,s1,s1,s2,s2,s2,s2,...dim = 256*4, 17
+
+        sampled_action, entropy_prefs, _ = self.policy.sample(b_pref_states, preference_batch)
+
+        entropy_prefs = entropy_prefs.squeeze()  # 256*4
+        entropy_prefs = entropy_prefs.reshape(self.batch_size, -1)  # dim = [256, 4]
+        entropy_batch = entropy_prefs[:, 0]  # dim = 256
+        entropy = entropy_batch.unsqueeze(-1).repeat(1, 4).reshape(-1)  # dim = 256*4  (e1, e1, e1, e1, e2, e2, e2, e2, e3, ...)
+
         losses = []
 
         c_cnt = 0
-        for a, c in enumerate([ self.critic]+self.Q_memory.sample() ): # Use critic from Q Replay Buffer
-            for b, i in enumerate(PREF): #Get Q from preference set W
-                p_batch = torch.tensor(i, device = self.device).repeat(self.batch_size, 1)
-                sampled_action, entropy, _ = self.policy.sample(states, p_batch)
-                if a == 0 and b == 0:
-                    e = entropy
-                q1, q2 = c(states, sampled_action, preference_batch)
-                
-                q1 = torch.tensordot(q1, preference, dims = 1)
-                q2 = torch.tensordot(q2, preference, dims = 1)
-                q = torch.min(q1, q2)
+        # for a, c in enumerate([self.critic] + self.Q_memory.sample()):  # Use critic from Q Replay Buffer
+        for a, c in enumerate([self.critic] + self.Q_memory.sample()):  # Use critic from Q Replay Buffer
+            # if a == 0:
+            #     entropy_prefs = entropy_prefs.squeeze()     # 256*4
+            #     entropy_prefs = entropy_prefs.reshape(self.batch_size, -1)   # dim = [256, 4]
+            #     entropy_batch = entropy_prefs[:, 0]   # dim = 256
+            #     entropy = entropy_batch.unsqueeze(-1).repeat(1, 4).reshape(-1)  # dim = 256*4
+            qn = c(b_pref_states, sampled_action, prefs_batch)  # q(s1,w1) q(s1,w2), q(s1,w3), q(s1,w4), q(s2,w1),...
 
-                # l = - q - self.alpha * entropy
-                l = - q - self.alpha * (entropy.squeeze())
+            w_qn = [torch.tensordot(q, preference, dims=1) for q in qn]
+            q = torch.min(torch.stack(w_qn, 0), 0)[0]   # dim = 3 * 1024 = num_q * 1024  => min: 1024
 
-        losses = torch.stack(losses, dim = 1)
-        policy_loss, idx =  torch.min(losses, 1)
+            l = - q - self.alpha * entropy
+            l = l.reshape(self.set_num, -1)     # dim = 4 * 246 = num_pref * batch
+            losses.append(l)  # list[ 5 * [4, 256]]
+
+        losses = torch.stack(losses, dim=0)  # dim = [5, 4, 256]
+        losses = losses.reshape(-1, losses.shape[-1])    # dim = [20, 256]
+        policy_loss, idx = torch.min(losses, 0)
         # ll=idx.detach().cpu()[:,0].tolist()
         policy_loss = torch.mean(policy_loss)
 
-        
-        sampled_action, e, _ = self.policy.sample(states, preference_batch)
+        # sampled_action, e, _ = self.policy.sample(states, preference_batch)
 
-        return policy_loss, e
+        return policy_loss, entropy_batch
 
     def calc_entropy_loss(self, entropy, weights):
         # Intuitively, we increse alpha when entropy is less than target
@@ -682,7 +907,9 @@ class SacAgent:
             trace = []
             actions = []
             while not done:
-                action = self.exploit(state,preference )
+                # s = np.clip((state - self.state_mean) / self.state_std, -10, 10)
+                # action = self.exploit(s, preference)
+                action = self.exploit(state, preference)
                 trace.append(list(state))
                 actions.append(list(action))
                 # next_state, reward, done, _ = self.env.step(action)
@@ -738,7 +965,9 @@ class SacAgent:
             trace = []
             actions = []
             while not done:
-                action = self.exploit(state,preference )
+                # s = np.clip((state - self.state_mean) / self.state_std, -10, 10)
+                # action = self.exploit(s,preference )
+                action = self.exploit(state, preference)
                 trace.append(list(state))
                 actions.append(list(action))
                 # next_state, reward, done, _ = self.env.step(action)
@@ -754,9 +983,10 @@ class SacAgent:
         batch = self.memory.sample(self.batch_size) 
         p = torch.tensor(preference ,device = self.device, dtype=torch.float32)
         with torch.no_grad():
-            q1_loss, q2_loss, errors, mean_q1, mean_q2 =\
-                            self.calc_critic_loss(batch, 1, p, 0)
+            # q1_loss, q2_loss, errors, mean_q1, mean_q2 =\
+            qn_loss, errors, mean_q = self.calc_critic_loss(batch, 1, p, 0)
         #monitor.update(self.steps/self.eval_interval, np.dot(preference,mean_return), *mean_return, q1_loss.mean().item())
+        #monitor.update(self.steps / self.eval_interval, np.dot(preference, mean_return), *mean_return, qn_loss[0].mean().item())
 
 
         path = os.path.join(self.log_dir, 'summary')
@@ -777,8 +1007,20 @@ class SacAgent:
     def save_models(self, num):
         self.policy.save(os.path.join(self.model_dir, 'policy_'+str(num)+'.pth'))
         self.critic.save(os.path.join(self.model_dir, 'critic_'+str(num)+'.pth'))
-        self.critic_target.save(
-            os.path.join(self.model_dir, 'critic_target.pth'))
+        self.critic_target.save(os.path.join(self.model_dir, 'critic_target'+str(num)+'.pth'))
+        with open(os.path.join(self.model_dir, 'Q_memory_'+str(num)+'.pkl'), 'wb') as file:
+            pickle.dump(self.Q_memory, file)
+        with open(os.path.join(self.model_dir, 'replay_buf_'+str(num)+'.pkl'), 'wb') as file:
+            pickle.dump(self.memory, file)
+
+    def load_models(self, num):
+        self.policy.load(os.path.join(self.model_dir, 'policy_'+str(num)+'.pth'))
+        self.critic.load(os.path.join(self.model_dir, 'critic_'+str(num)+'.pth'))
+        self.critic_target.load(os.path.join(self.model_dir, 'critic_target'+str(num)+'.pth'))
+        with open(os.path.join(self.model_dir, 'Q_memory_'+str(num)+'.pkl'), 'rb') as file:
+            self.Q_memory = pickle.load(file)
+        with open(os.path.join(self.model_dir, 'replay_buf_'+str(num)+'.pkl'), 'rb') as file:
+            self.memory = pickle.load(file)
 
     def __del__(self):
         #self.writer.close()
