@@ -3,13 +3,13 @@ import numpy as np
 import torch
 
 
-def to_batch(state, action, reward, next_state, done, device):
+def to_batch(state, preference, action, reward, next_state, done, device):
     state = torch.FloatTensor(state).unsqueeze(0).to(device)
-    preference = torch.FloatTensor(state).unsqueeze(0).to(device)
-    action = torch.FloatTensor([action]).view(1, -1).to(device)
-    reward = torch.FloatTensor([reward]).unsqueeze(0).to(device)
+    preference = torch.FloatTensor(preference).unsqueeze(0).to(device)
+    action = torch.FloatTensor(np.array([action])).view(1, -1).to(device)
+    reward = torch.FloatTensor(np.array([reward])).unsqueeze(0).to(device)
     next_state = torch.FloatTensor(next_state).unsqueeze(0).to(device)
-    done = torch.FloatTensor([done]).unsqueeze(0).to(device)
+    done = torch.FloatTensor(np.array([done])).unsqueeze(0).to(device)
     return state, preference, action, reward, next_state, done
 
 

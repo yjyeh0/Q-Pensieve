@@ -5,7 +5,7 @@ import torch
 import copy
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
-from rltorch.memory import MultiStepMemory, PrioritizedMemory
+# from rltorch.memory import MultiStepMemory, PrioritizedMemory
 from base import QMemory
 
 from model import MultiQNetwork, GaussianPolicy
@@ -13,6 +13,7 @@ from utils import grad_false, hard_update, soft_update, to_batch,\
     update_params, RunningMeanStats
 import random
 from multi_step import *
+from prioritized import *
 from datetime import datetime
 import time
 
@@ -192,8 +193,8 @@ class SacAgent:
         if per:
             # replay memory with prioritied experience replay
             # See https://github.com/ku2482/rltorch/blob/master/rltorch/memory
-            self.memory = PrioritizedMemory(
-                memory_size, self.env.observation_space.shape,
+            self.memory = MOPrioritizedMemory(
+                memory_size, self.env.observation_space.shape, self.env.reward_num,
                 self.env.action_space.shape, self.device, gamma, multi_step,
                 alpha=alpha, beta=beta, beta_annealing=beta_annealing)
         else:
@@ -313,8 +314,11 @@ class SacAgent:
 
         mo_returns = []
         mo_rewards = []
+        tot_rewards = []
         for traj in trajs:
             traj['rewards'] = np.sum(np.multiply(traj['raw_rewards'], traj['preference']), axis=1)
+            tot_rewards.append(traj['raw_rewards'].sum())
+
             returns.append(traj['rewards'].sum())
             mo_returns.append(np.sum(traj['raw_rewards'], 0))
             mo_rewards.append(traj['raw_rewards'])
@@ -335,10 +339,10 @@ class SacAgent:
             plt.scatter(range(len(mo_returns[1])), mo_returns[1], alpha=0.5, s=1)
             plt.show()
 
-            sorted_inds = np.argsort(returns)  # lowest to highest
-            a = np.array(returns)
-            # plt.scatter(range(sorted_inds.shape[0]), a[sorted_inds], alpha=0.5, s=1)
-            plt.scatter(range(sorted_inds.shape[0]), a, alpha=0.5, s=1)
+            sorted_inds = np.argsort(tot_rewards)  # lowest to highest
+            a = np.array(tot_rewards)
+            plt.scatter(range(sorted_inds.shape[0]), a[sorted_inds], alpha=0.5, s=1)
+            # plt.scatter(range(sorted_inds.shape[0]), a, alpha=0.5, s=1)
             plt.show()
 
 
@@ -421,7 +425,7 @@ class SacAgent:
         return target_q
 
     def train_episode_offline(self, traj):
-        # self.episodes += 1
+        self.episodes += 1
         episode_reward = 0.
         episode_steps = 0
         done = False
@@ -445,7 +449,7 @@ class SacAgent:
             # next_state, reward, done, _ = self.env.step(action)
             self.steps += 1
             episode_steps += 1
-            # episode_reward += reward
+            episode_reward += traj['raw_rewards'][step]
 
             # ignore done if the agent reach time horizons
             # (set done=True only when the agent fails)
@@ -466,9 +470,9 @@ class SacAgent:
                     self.device)
 
                 with torch.no_grad():
-                    curr_q1, curr_q2 = self.calc_current_q(*batch)
+                    curr_qn = self.calc_current_q(*batch)
                 target_q = self.calc_target_q(*batch)
-                error = torch.abs(curr_q1 - target_q).item()
+                error = torch.abs(curr_qn[0] - target_q).cpu().numpy()
 
                 self.memory.append(
                     traj['observations'][step],
@@ -478,7 +482,7 @@ class SacAgent:
                     traj['next_observations'][step],
                     masked_done,
                     error,
-                    episode_done=int(traj["terminals"][step]))
+                    episode_done=traj["terminals"][step])
             else:
                     # We need to give true done signal with addition to masked done
                     # signal to calculate multi-step rewards.
@@ -536,8 +540,15 @@ class SacAgent:
                 for i in range(len(PREF_)):
                     # self.evaluate(PREF_[i],self.monitor[i],i)
                     self.evaluate_(PREF_[i], i)
+
                 if self.steps % self.model_saved_step == 0:
                     self.save_models(self.steps / self.model_saved_step)
+
+        # preference = traj['preference'][0]
+        # print(f'episode: {self.episodes:<4}  '
+        #       f'episode steps: {episode_steps:<4}  '
+        #       f'episode weight: {preference}  '
+        #       f'reward:', episode_reward)
 
     def train_episode(self):
         self.episodes += 1
@@ -583,9 +594,9 @@ class SacAgent:
                     self.device)
      
                 with torch.no_grad():
-                    curr_q1, curr_q2 = self.calc_current_q(*batch)
+                    curr_qn = self.calc_current_q(*batch)
                 target_q = self.calc_target_q(*batch)
-                error = torch.abs(curr_q1 - target_q).item()
+                error = torch.abs(curr_qn[0] - target_q).cpu().numpy()
                 # We need to give true done signal with addition to masked done
                 # signal to calculate multi-step rewards.
                 self.memory.append(
