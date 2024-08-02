@@ -126,8 +126,8 @@ def run():
         'logs', args.env_id,
         f'MOSAC-set{args.prefer}-buf{args.buf_num}-seed{args.seed}_freq{args.q_freq}')
 
-    # state_mean = state_norm_params[args.env_id]["mean"]
-    # state_std = np.sqrt(state_norm_params[args.env_id]["var"])
+    state_mean = state_norm_params[args.env_id]["mean"]
+    state_std = np.sqrt(state_norm_params[args.env_id]["var"])
     agent = SacAgent(env=env, log_dir=log_dir, state_mean=state_mean, state_std=state_std, **configs)
     # agent.load_dataset_to_memory(trajectories)
     #agent.run()
