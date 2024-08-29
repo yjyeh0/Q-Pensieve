@@ -110,7 +110,8 @@ class SacAgent:
                  eval_interval=1000, cuda=True, seed=0, cuda_device=0, q_frequency=1000, model_saved_step=100000, on_line=False):
         # yeh add
         self.on_line = on_line
-        self.num_q = 10
+        self.num_q = 2 #10
+        self.gamma = gamma
         self.print_on = False
 
         self.env = env
@@ -362,8 +363,6 @@ class SacAgent:
             if self.steps > self.num_steps:
                 break
 
-
-
     def is_update(self):
         return len(self.memory) > self.batch_size and\
             self.steps >= self.start_steps
@@ -550,6 +549,10 @@ class SacAgent:
         #       f'episode weight: {preference}  '
         #       f'reward:', episode_reward)
 
+
+            if self.steps > self.num_steps:
+                break
+
     def train_episode(self):
         self.episodes += 1
         episode_reward = 0.
@@ -669,22 +672,22 @@ class SacAgent:
         # q1_loss, q2_loss, errors, mean_q1, mean_q2 =\
         qn_loss, errors, mean_qn = self.calc_critic_loss(batch, weights, preference)
 
-        if self.on_line:
-            PREF_SET = []
-            PREF_SET.append(preference)
+        # if self.on_line:
+        PREF_SET = []
+        PREF_SET.append(preference)
 
-            # indice = np.random.randint(low=0, high=self.batch_size, size = self.set_num-1)
-            # a = [x for x in batch[1][indice]]
-            # PREF_SET = PREF_SET + a
+        # indice = np.random.randint(low=0, high=self.batch_size, size = self.set_num-1)
+        # a = [x for x in batch[1][indice]]
+        # PREF_SET = PREF_SET + a
 
-            for _ in range(self.set_num-1):
-                p = self.get_pref()
-                p = torch.tensor(p ,device = self.device)
-                PREF_SET.append(p)
-
-            policy_loss, entropies = self.calc_policy_loss(batch, weights, preference, PREF_SET)
-        else:
-            policy_loss, entropies = self.offline_calc_policy_loss(batch, weights, preference)
+        for _ in range(self.set_num-1):
+            p = self.get_pref()
+            p = torch.tensor(p ,device = self.device)
+            PREF_SET.append(p)
+        #
+        #     policy_loss, entropies = self.calc_policy_loss(batch, weights, preference, PREF_SET)
+        # else:
+        policy_loss, entropies = self.offline_calc_policy_loss(batch, weights, preference, PREF_SET, self.on_line)
 
         if self.entropy_tuning:
             entropy_loss = self.calc_entropy_loss(entropies, weights)
@@ -748,30 +751,88 @@ class SacAgent:
 
         return qn_loss, errors, mean_qn
 
-    def offline_calc_policy_loss(self, batch, weights, preference):
+    # def offline_calc_policy_loss(self, batch, weights, preference, is_online):
+    #     start = time.time()
+    #     states, _, actions, rewards, next_states, mc_return, dones = batch
+    #     preference_batch = preference.repeat(self.batch_size, 1)
+    #
+    #     # p_batch = torch.tensor(preference, device=self.device).repeat(self.batch_size, 1)
+    #     # sampled_action, entropy, _ = self.policy.sample(states, p_batch)
+    #
+    #     sampled_action, entropy, _ = self.policy.sample(states, preference_batch)
+    #     qn = self.critic(states, sampled_action, preference_batch)
+    #
+    #     # writer.add_graph(self.policy, (states, preference_batch))
+    #
+    #     w_qn = [torch.tensordot(q, preference, dims=1) for q in qn]
+    #     q = torch.min(torch.stack(w_qn, 1), 1)[0]
+    #
+    #     # q1 = torch.tensordot(q1, preference, dims=1)
+    #     # q2 = torch.tensordot(q2, preference, dims=1)
+    #     # q = torch.min(q1, q2)f
+    #     policy_loss = - q - self.alpha * (entropy.squeeze())
+    #     policy_loss = torch.mean(policy_loss)
+    #
+    #     if not is_online:
+    #         policy_loss = torch.abs(policy_loss.detach() * (1 - torch.mean(torch.nn.functional.cosine_similarity(actions, sampled_action)))
+    #
+    #     return policy_loss, entropy()
+
+    def offline_calc_policy_loss(self, batch, weights, preference, PREF, is_online):
         start = time.time()
-        states, _, actions, rewards, next_states, dones = batch
-        preference_batch = preference.repeat(self.batch_size, 1)
+        states, _, actions, rewards, next_states, mc_return, dones = batch
+        preference_batch = preference.repeat(self.batch_size * self.set_num, 1)
 
-        # p_batch = torch.tensor(preference, device=self.device).repeat(self.batch_size, 1)
-        # sampled_action, entropy, _ = self.policy.sample(states, p_batch)
+        prefs = torch.stack(PREF)
+        prefs_batch = prefs.repeat(self.batch_size, 1)  # w1w2w3w4 w1w2w3w4...w1w2w3w4  4*256
+        b_pref_states = states.unsqueeze(1).repeat(1, self.set_num, 1)  # dim = 256, 4, 17
+        b_pref_states = b_pref_states.reshape(-1, b_pref_states.shape[-1])  # s1,s1,s1,s1,s2,s2,s2,s2,...dim = 256*4, 17
 
-        sampled_action, entropy, _ = self.policy.sample(states, preference_batch)
-        qn = self.critic(states, sampled_action, preference_batch)
+        sampled_action, entropy_prefs, _ = self.policy.sample(b_pref_states, preference_batch)
 
-        # writer.add_graph(self.policy, (states, preference_batch))
+        entropy_prefs = entropy_prefs.squeeze()  # 256*4
+        entropy_prefs = entropy_prefs.reshape(self.batch_size, -1)  # dim = [256, 4]
+        entropy_batch = entropy_prefs[:, 0]  # dim = 256
+        entropy = entropy_batch.unsqueeze(-1).repeat(1, 4).reshape(-1)  # dim = 256*4  (e1, e1, e1, e1, e2, e2, e2, e2, e3, ...)
 
-        w_qn = [torch.tensordot(q, preference, dims=1) for q in qn]
-        q = torch.min(torch.stack(w_qn, 1), 1)[0]
+        # sampled_action = sampled_action.squeeze()  # 256*4, 6
+        tmp_sampled_action = sampled_action.reshape(self.batch_size, self.set_num, -1)  # dim = [256, 4]
+        action_batch = tmp_sampled_action[:, 0, :]  # dim = 256
 
-        # q1 = torch.tensordot(q1, preference, dims=1)
-        # q2 = torch.tensordot(q2, preference, dims=1)
-        # q = torch.min(q1, q2)
-        policy_loss = - q - self.alpha * (entropy.squeeze())
+        losses = []
+
+        c_cnt = 0
+        # for a, c in enumerate([self.critic] + self.Q_memory.sample()):  # Use critic from Q Replay Buffer
+        for a, c in enumerate([self.critic]):
+            # if a == 0:
+            #     entropy_prefs = entropy_prefs.squeeze()     # 256*4
+            #     entropy_prefs = entropy_prefs.reshape(self.batch_size, -1)   # dim = [256, 4]
+            #     entropy_batch = entropy_prefs[:, 0]   # dim = 256
+            #     entropy = entropy_batch.unsqueeze(-1).repeat(1, 4).reshape(-1)  # dim = 256*4
+
+            with torch.no_grad():
+                qn = c(b_pref_states, sampled_action, prefs_batch)  # q(s1,w1) q(s1,w2), q(s1,w3), q(s1,w4), q(s2,w1),...
+
+            w_qn = [torch.tensordot(q, preference, dims=1) for q in qn]
+            q = torch.min(torch.stack(w_qn, 0), 0)[0]   # dim = 3 * 1024 = num_q * 1024  => min: 1024
+
+            l = - q - self.alpha * entropy
+            l = l.reshape(self.set_num, -1)     # dim = 4 * 246 = num_pref * batch
+            losses.append(l)  # list[ 5 * [4, 256]]
+
+        losses = torch.stack(losses, dim=0)  # dim = [5, 4, 256]
+        losses = losses.reshape(-1, losses.shape[-1])    # dim = [20, 256]
+        policy_loss, idx = torch.min(losses, 0)
+        # ll=idx.detach().cpu()[:,0].tolist()
         policy_loss = torch.mean(policy_loss)
 
-        return policy_loss, entropy
-
+        # sampled_action, e, _ = self.policy.sample(states, preference_batch)
+        if not is_online:
+            # Aug12_06-26-12 good policy_loss = torch.abs(policy_loss.detach()) * (1 - torch.mean(torch.nn.functional.cosine_similarity(actions.double(), action_batch.double())))
+            # Aug13_10-24 bad !! policy_loss = policy_loss - torch.abs(policy_loss.detach()) * torch.mean(torch.nn.functional.cosine_similarity(actions.double(), action_batch.double()))
+            # policy_loss = policy_loss * torch.mean(torch.nn.functional.cosine_similarity(actions.double(), action_batch.double()))
+            policy_loss = -1 * torch.abs(policy_loss.detach()) * torch.mean(torch.nn.functional.cosine_similarity(actions.double(), action_batch.double()))
+        return policy_loss, entropy_batch
 
 
     # def calc_policy_loss_org(self, batch, weights, preference, PREF):

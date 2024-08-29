@@ -148,6 +148,7 @@ def run():
     # agent.rewards_mean = np.concatenate(mo_rewards).mean(0)
     # agent.rewards_std = np.concatenate(mo_rewards).std(0)
 
+    agent.on_line = True
     agent.run()
 
 if __name__ == '__main__':

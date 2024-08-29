@@ -133,7 +133,7 @@ class MOMemory:
         self._p = (self._p + num_data) % self.capacity
 
     def _insert(self, mem_indices, batch, batch_indices):
-        states, actions, rewards, next_states, dones = batch
+        states, preferences, actions, rewards, next_states, dones = batch
         self.states[mem_indices] = states[batch_indices]
         self.preferences[mem_indices] = preferences[batch_indices]
         self.actions[mem_indices] = actions[batch_indices]

@@ -16,7 +16,11 @@ def to_batch(state, preference, action, reward, next_state, done, device):
 def update_params(optim, network, loss, grad_clip=None, retain_graph=False, print_on=False):
     optim.zero_grad()
     with torch.autograd.set_detect_anomaly(True):
-        loss.backward(retain_graph=retain_graph)
+        try:
+            loss.backward(retain_graph=retain_graph)
+        except:
+            for name, p in network.named_parameters():
+                print(name, p)
 
     if print_on and network is not None:
         for name, p in network.named_parameters():
