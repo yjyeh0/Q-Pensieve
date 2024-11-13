@@ -810,8 +810,7 @@ class SacAgent:
             #     entropy_batch = entropy_prefs[:, 0]   # dim = 256
             #     entropy = entropy_batch.unsqueeze(-1).repeat(1, 4).reshape(-1)  # dim = 256*4
 
-            with torch.no_grad():
-                qn = c(b_pref_states, sampled_action, prefs_batch)  # q(s1,w1) q(s1,w2), q(s1,w3), q(s1,w4), q(s2,w1),...
+            qn = c(b_pref_states, sampled_action, prefs_batch)  # q(s1,w1) q(s1,w2), q(s1,w3), q(s1,w4), q(s2,w1),...
 
             w_qn = [torch.tensordot(q, preference, dims=1) for q in qn]
             q = torch.min(torch.stack(w_qn, 0), 0)[0]   # dim = 3 * 1024 = num_q * 1024  => min: 1024
