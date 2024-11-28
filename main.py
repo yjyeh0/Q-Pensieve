@@ -5,6 +5,7 @@ import gym
 import torch
 import numpy as np
 import random
+from datetime import datetime
 
 # import d4rl  # Import required to register environments, you may need to also import the submodule
 
@@ -73,7 +74,7 @@ def run():
         'model_saved_step': 100000
     }
 
-    dataset_paths = [f"data/{args.env_id}/{args.env_id}_50000_{d}.pkl" for d in args.dataset]
+    dataset_paths = [f"data_d4morl/{args.env_id}/{args.env_id}_50000_{d}.pkl" for d in args.dataset]
     trajectories = []
     for data_path in dataset_paths:
         with open(data_path, 'rb') as f:
@@ -121,10 +122,11 @@ def run():
 
     '''
     env = gym.make(args.env_id)
-    
+
+    current_time = datetime.now().strftime("_%Y-%m-%d_%H_%M")
     log_dir = os.path.join(
         'logs', args.env_id,
-        f'MOSAC-set{args.prefer}-buf{args.buf_num}-seed{args.seed}_freq{args.q_freq}')
+        f'MOSAC-set{args.prefer}-buf{args.buf_num}-seed{args.seed}_freq{args.q_freq}_{current_time}')
 
     state_mean = state_norm_params[args.env_id]["mean"]
     state_std = np.sqrt(state_norm_params[args.env_id]["var"])

@@ -22,10 +22,17 @@ def update_params(optim, network, loss, grad_clip=None, retain_graph=False, prin
             for name, p in network.named_parameters():
                 print(name, p)
 
-    if print_on and network is not None:
+    # if print_on and network is not None:
+    #     for name, p in network.named_parameters():
+    #         if not torch.all(p.grad):
+    #             print(name, p.grad)
+
+    if print_on:
         for name, p in network.named_parameters():
-            if not torch.all(p.grad):
-                print(name, p.grad)
+            if p.grad is not None:
+                grad_norm = p.grad.norm().item()
+                if grad_norm > grad_clip:
+                    print(name, " ", grad_norm)
 
     if grad_clip is not None:
         for p in network.modules():
